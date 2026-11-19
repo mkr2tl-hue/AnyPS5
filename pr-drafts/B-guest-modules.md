@@ -17,7 +17,7 @@ Linux x86-64 (4 cores), GCC 13.3.0 and Clang 18.1.3 with `libclang-rt-18-dev`, r
 - Clang fuzzing build with ASan and UBSan: 769/769, including both fuzzers.
 - 20-minute campaign from 440 seeds, `-fork=4 -timeout=20 -rss_limit_mb=3000`: 2,050,091 executions, no crash, timeout or out-of-memory input.
 - `llvm-cov` line coverage: `GuestImageReader.cpp` 0 to 420/514 lines, `GuestModuleBuilder.cpp` 15 to 572/709. With the profile of the options fuzzer merged, the relinker sources reach 63.29 % of lines, from 45.76 % on `main`.
-- `python3 tools/check_conventions.py --base origin/main` passes.
+- `python3 tools/check_conventions.py`, with upstream `main` 74f685158e as base, passes.
 
 Corpora, logs and coverage reports: https://github.com/mkr2tl-hue/AnyPS5/tree/archive/relinker-fuzzing-2026-11-19
 

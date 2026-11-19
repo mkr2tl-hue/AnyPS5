@@ -14,11 +14,11 @@ Title: test(relinker): fuzz the conversion options the command line and web conv
 Linux x86-64 (4 cores), GCC 13.3.0 and Clang 18.1.3 with `libclang-rt-18-dev`, relinker only.
 
 - GCC Release, `-DANYPS5_RELINKER_ONLY=ON -DBUILD_TESTING=ON`: 1011/1011 on `main` (74f685158e), 1012/1012 with this change. `relinker_fuzz_options` takes 2.4 s.
-- Clang fuzzing build (`-DANYPS5_BUILD_FUZZERS=ON`, ASan and UBSan): all CTest cases pass, including `relinker_conversion_fuzzer` and `relinker_fuzz_options` (36 s under ASan).
+- Clang fuzzing build (`-DANYPS5_BUILD_FUZZERS=ON`, ASan and UBSan): `relinker_fuzz_options` passes (36 s under ASan) and `relinker_conversion_fuzzer` builds and runs its campaign below. The full Clang CTest suite ran with the guest module fuzzer change on top: 769/769.
 - 20-minute campaigns, `-fork=4 -timeout=20 -rss_limit_mb=3000`: `main` from 216 seeds made 1,602,172 executions; this change from 2,160 seeds made 1,166,057. No crash, timeout or out-of-memory input in either.
 - `llvm-cov` line coverage of the relinker sources (3rdparty, system headers and `core/relinker/fuzz` excluded), replaying each final corpus: 45.76 % on `main`, 54.37 % with this change. Newly reached: `WindowsDependencyStubBuilder.cpp` 0 to 711/711 lines, `RedZoneFramer.cpp` 0 to 187/605, `StrictReachability.cpp` 7 to 182/196, and the Rosetta and AVX lowerings.
 - Replaying the 2,768 inputs of the `main` corpus whose first byte keeps its meaning through the old and the new fuzzer gives identical per-file coverage.
-- `python3 tools/check_conventions.py --base origin/main` passes.
+- `python3 tools/check_conventions.py`, with the upstream `main` above as base, passes on this commit alone.
 
 Corpora, logs and coverage reports: https://github.com/mkr2tl-hue/AnyPS5/tree/archive/relinker-fuzzing-2026-11-19
 

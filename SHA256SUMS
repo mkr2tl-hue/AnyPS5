@@ -15,8 +15,8 @@ fe80a8aea48960ea4dbda68290e8d112f08f723a199e2e0b0f8a0248a7e8ca8b  coverage/cover
 0165ec6b9b5bd2c74ac6cd6ff9229f8092dcf7193f44fbf5344977c6f56dc104  logs/campaign-B.log.xz
 bbecdf3dce03e9bbbced51b9193220ac22ba6741491da229a87218e5fc10f50a  patches/0001-test-relinker-fuzz-the-conversion-options-the-comman.patch
 59e28696cb5c8104eaa5631e4ccb2558864d93f5fd4c8d39f02f46c939444608  patches/0002-test-relinker-fuzz-the-conversion-of-guest-modules.patch
-6f34c901c1c9977665afa8aef9c9f2791239881097c78e96c14d9c14486d1ccb  pr-drafts/A-extended-options.md
-6c762809cd3c5a40a68362ec52b08714a86b730dc422611927c252e9c3a3bf72  pr-drafts/B-guest-modules.md
+6f4d8aba04bf1ddd54999531d3b71bd3165196e57efb7d13d5c3c16677292e82  pr-drafts/A-extended-options.md
+61e2e58e1d3e21f234ad1421d23a1baf95283e864cb296e876aed60fcfd1858d  pr-drafts/B-guest-modules.md
 a93067ca757de51051b1c8547cfb7e6d8f917ef98d9d3ff78e5a3fd47657a08a  tests/ctest-clang-asan-branch.log.xz
 de496e466fb363d580132ff49fb3ae2421869c0893b6d211a7ab448531fdecab  tests/ctest-gcc-branch.log.xz
 eb1896f9adff27242f9ba54d5053ef160879c0955e90d38cdbbc6427ff351d46  tests/ctest-gcc-main.log.xz
