@@ -24,6 +24,7 @@ This orphan branch only stores fuzzing results. It shares no history with `main`
 | `coverage/coverage-*.txt.xz` | `llvm-cov report` per source file (see below) |
 | `tests/ctest-*.log.xz` | Full CTest runs: GCC on `main`, GCC on the branch, Clang ASan/UBSan on the branch |
 | `patches/*.patch` | `git format-patch` of the two commits |
+| `pr-drafts/*.md` | Unpublished pull request descriptions for part A and part B (B depends on A) |
 | `SHA256SUMS` | SHA-256 of every other file; check with `sha256sum -c SHA256SUMS` |
 
 ## Results

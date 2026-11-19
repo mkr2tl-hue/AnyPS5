@@ -1,4 +1,4 @@
-da41de6f4fc00d92c81d8af67fcb0286295e4edd8980896d327d96151c31882d  README.md
+aee6766d2e4b484eb7ee12c6dbd6f6b2ae2ddc829822d3e69420a5d94041ed6a  README.md
 6a96934b7f17a05d2f70707e6a3c144647c7d84051c632c6a569faf621159550  corpora/corpus-conversion-min.tar.xz
 0a434097a293e7d65c664391ce6dce161e3aeb184dca8d0b930f00dd0fc6e463  corpora/corpus-guest-min.tar.xz
 1fbeca0b835e54d047eaaade7e8124989b3b329d85f6263ee0f4956d28a0b191  corpora/seeds-conversion-extended.tar.xz
@@ -15,6 +15,8 @@ fe80a8aea48960ea4dbda68290e8d112f08f723a199e2e0b0f8a0248a7e8ca8b  coverage/cover
 0165ec6b9b5bd2c74ac6cd6ff9229f8092dcf7193f44fbf5344977c6f56dc104  logs/campaign-B.log.xz
 bbecdf3dce03e9bbbced51b9193220ac22ba6741491da229a87218e5fc10f50a  patches/0001-test-relinker-fuzz-the-conversion-options-the-comman.patch
 59e28696cb5c8104eaa5631e4ccb2558864d93f5fd4c8d39f02f46c939444608  patches/0002-test-relinker-fuzz-the-conversion-of-guest-modules.patch
+6f34c901c1c9977665afa8aef9c9f2791239881097c78e96c14d9c14486d1ccb  pr-drafts/A-extended-options.md
+6c762809cd3c5a40a68362ec52b08714a86b730dc422611927c252e9c3a3bf72  pr-drafts/B-guest-modules.md
 a93067ca757de51051b1c8547cfb7e6d8f917ef98d9d3ff78e5a3fd47657a08a  tests/ctest-clang-asan-branch.log.xz
 de496e466fb363d580132ff49fb3ae2421869c0893b6d211a7ab448531fdecab  tests/ctest-gcc-branch.log.xz
 eb1896f9adff27242f9ba54d5053ef160879c0955e90d38cdbbc6427ff351d46  tests/ctest-gcc-main.log.xz
