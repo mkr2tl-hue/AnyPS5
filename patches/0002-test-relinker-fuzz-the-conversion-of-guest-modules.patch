@@ -1,0 +1,317 @@
+From 6179877ab58d767cd70bd464878d387b8e948105 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 11:00:37 +0000
+Subject: [PATCH 2/2] test(relinker): fuzz the conversion of guest modules
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01K8jaqaV3jxmjnPFRfdH5uj
+---
+ core/relinker/CMakeLists.txt                  |  7 +++
+ core/relinker/fuzz/FuzzOptions.hpp            | 29 +++++++++++
+ core/relinker/fuzz/GuestModuleFuzzer.cpp      | 39 ++++++++++++++
+ core/relinker/fuzz/tests/FuzzOptionsTests.cpp | 39 ++++++++++++++
+ docs/dev/BUILD.md                             |  8 +++
+ tools/relinker_fuzz_seeds.py                  | 51 +++++++++++++++++++
+ .../test_relinker_fuzz_configurations.py      | 22 ++++++++
+ 7 files changed, 195 insertions(+)
+ create mode 100644 core/relinker/fuzz/GuestModuleFuzzer.cpp
+
+diff --git a/core/relinker/CMakeLists.txt b/core/relinker/CMakeLists.txt
+index 96ca8c7e19..3a1497e6f2 100644
+--- a/core/relinker/CMakeLists.txt
++++ b/core/relinker/CMakeLists.txt
+@@ -220,6 +220,13 @@ if(ANYPS5_BUILD_FUZZERS)
+         add_test(NAME relinker_conversion_fuzzer COMMAND relinker_conversion_fuzzer -runs=20000 -seed=1)
+         set_tests_properties(relinker_conversion_fuzzer PROPERTIES TIMEOUT 120)
+     endif()
++    add_test_executable(relinker_guest_module_fuzzer ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/GuestModuleFuzzer.cpp)
++    target_link_libraries(relinker_guest_module_fuzzer PRIVATE relinker_core)
++    target_link_options(relinker_guest_module_fuzzer PRIVATE -fsanitize=fuzzer)
++    if(BUILD_TESTING)
++        add_test(NAME relinker_guest_module_fuzzer COMMAND relinker_guest_module_fuzzer -runs=20000 -seed=1)
++        set_tests_properties(relinker_guest_module_fuzzer PROPERTIES TIMEOUT 120)
++    endif()
+ endif()
+ 
+ if(ANYPS5_BUILD_WASM)
+diff --git a/core/relinker/fuzz/FuzzOptions.hpp b/core/relinker/fuzz/FuzzOptions.hpp
+index 8ed5338607..2a48b1e2df 100644
+--- a/core/relinker/fuzz/FuzzOptions.hpp
++++ b/core/relinker/fuzz/FuzzOptions.hpp
+@@ -1,10 +1,13 @@
+ #pragma once
+ 
+ #include <relinker/pipeline/Conversion.hpp>
++#include <algorithm>
+ #include <cstddef>
+ #include <cstdint>
+ #include <optional>
++#include <string>
+ #include <span>
++#include <vector>
+ 
+ namespace Relinker::Fuzz {
+ 
+@@ -84,4 +87,30 @@ struct FuzzCase {
+     return result;
+ }
+ 
++inline constexpr std::size_t MaxGuestModules = 4;
++inline constexpr std::size_t MaxModuleNameLength = 64;
++
++[[nodiscard]] inline std::string ModuleFileName(const std::span<const std::uint8_t> name, const std::size_t index) {
++    const auto allowed = [](const std::uint8_t character) {
++        return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '.' || character == '_' || character == '-';
++    };
++    std::string text(name.begin(), name.end());
++    if (text.empty() || text.size() > MaxModuleNameLength || text == "." || text == ".." || !std::all_of(name.begin(), name.end(), allowed))
++        return "libFuzz" + std::to_string(index) + ".prx";
++    return text;
++}
++
++[[nodiscard]] inline std::vector<std::span<const std::uint8_t>> SplitRecords(std::span<const std::uint8_t> data, const std::size_t maxRecords) {
++    std::vector<std::span<const std::uint8_t>> records;
++    while (records.size() < maxRecords && data.size() >= 4) {
++        const std::size_t length = static_cast<std::size_t>(data[0]) | static_cast<std::size_t>(data[1]) << 8
++            | static_cast<std::size_t>(data[2]) << 16 | static_cast<std::size_t>(data[3]) << 24;
++        data = data.subspan(4);
++        if (length > data.size()) break;
++        records.push_back(data.first(length));
++        data = data.subspan(length);
++    }
++    return records;
++}
++
+ }
+diff --git a/core/relinker/fuzz/GuestModuleFuzzer.cpp b/core/relinker/fuzz/GuestModuleFuzzer.cpp
+new file mode 100644
+index 0000000000..68b1c47518
+--- /dev/null
++++ b/core/relinker/fuzz/GuestModuleFuzzer.cpp
+@@ -0,0 +1,39 @@
++#include "FuzzOptions.hpp"
++#include <relinker/pipeline/Conversion.hpp>
++#include <io/NativePath.hpp>
++#include <cstddef>
++#include <cstdint>
++#include <exception>
++#include <string_view>
++
++namespace {
++
++class SilentProgress final : public Domain::IProgress {
++public:
++    void Report(const Domain::ProgressEvent&) override {}
++    void Message(std::string_view) override {}
++};
++
++}
++
++extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
++    auto decoded = Relinker::Fuzz::DecodeFuzzInput({data, size});
++    if (!decoded) return 0;
++    const auto records = Relinker::Fuzz::SplitRecords(decoded->Executable, 1 + 2 * Relinker::Fuzz::MaxGuestModules);
++    if (records.size() < 3) return 0;
++    auto options = decoded->Options;
++    options.LazyBinding = false;
++    Relinker::ConversionInput input;
++    input.InputPath = Io::NativePath("/input/eboot.bin");
++    input.OutputPath = Io::NativePath("/output/eboot");
++    input.ModuleRoot = "/input";
++    input.Executable.assign(records.front().begin(), records.front().end());
++    for (std::size_t index = 1; index + 1 < records.size(); index += 2)
++        input.Modules.push_back({Io::NativePath("/input/sce_module/" + Relinker::Fuzz::ModuleFileName(records[index], index / 2)), {records[index + 1].begin(), records[index + 1].end()}, {}});
++    SilentProgress progress;
++    try {
++        Relinker::Conversion(progress).Convert(std::move(input), options);
++    } catch (const std::exception&) {
++    }
++    return 0;
++}
+diff --git a/core/relinker/fuzz/tests/FuzzOptionsTests.cpp b/core/relinker/fuzz/tests/FuzzOptionsTests.cpp
+index 339562f576..fecc711111 100644
+--- a/core/relinker/fuzz/tests/FuzzOptionsTests.cpp
++++ b/core/relinker/fuzz/tests/FuzzOptionsTests.cpp
+@@ -85,6 +85,43 @@ void fixedBasesAreValidAddresses() {
+     }
+ }
+ 
++std::vector<std::uint8_t> record(const std::vector<std::uint8_t>& bytes) {
++    const auto length = static_cast<std::uint32_t>(bytes.size());
++    std::vector<std::uint8_t> result{static_cast<std::uint8_t>(length), static_cast<std::uint8_t>(length >> 8), static_cast<std::uint8_t>(length >> 16), static_cast<std::uint8_t>(length >> 24)};
++    result.insert(result.end(), bytes.begin(), bytes.end());
++    return result;
++}
++
++void recordsSplitAtTheirLengths() {
++    std::vector<std::uint8_t> data;
++    for (const auto& bytes : {std::vector<std::uint8_t>{1, 2, 3}, std::vector<std::uint8_t>{}, std::vector<std::uint8_t>{4}}) {
++        const auto encoded = record(bytes);
++        data.insert(data.end(), encoded.begin(), encoded.end());
++    }
++    const auto records = SplitRecords(data, 8);
++    require(records.size() == 3 && records[0].size() == 3 && records[0][2] == 3 && records[1].empty() && records[2].size() == 1 && records[2][0] == 4, "records were not split at their lengths");
++    require(SplitRecords(data, 2).size() == 2, "the record limit was not applied");
++    auto truncated = data;
++    truncated.pop_back();
++    require(SplitRecords(truncated, 8).size() == 2, "a record longer than the remaining input was kept");
++    const std::vector<std::uint8_t> huge{0xff, 0xff, 0xff, 0xff, 0};
++    require(SplitRecords(huge, 8).empty(), "a length past the input end produced a record");
++    require(SplitRecords(std::vector<std::uint8_t>{1, 0, 0}, 8).empty(), "a partial length produced a record");
++}
++
++void moduleNamesStayInsideTheModuleDirectory() {
++    const auto name = [](const std::string_view text, const std::size_t index) {
++        return ModuleFileName(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()), index);
++    };
++    require(name("provider.prx", 0) == "provider.prx", "a valid module name was replaced");
++    require(name("libSce-Fuzz_2.sprx", 0) == "libSce-Fuzz_2.sprx", "a module name with dashes and underscores was replaced");
++    const std::array<std::string_view, 9> invalidNames{"", ".", "..", "../eboot.bin", "dir/lib.prx", "dir\\lib.prx", std::string_view("lib\0.prx", 8), "C:lib.prx", "lib .prx"};
++    for (const auto invalid : invalidNames)
++        require(name(invalid, 3) == "libFuzz3.prx", "an invalid module name was kept: " + std::string(invalid.begin(), invalid.end()));
++    require(name(std::string(MaxModuleNameLength, 'a'), 0) == std::string(MaxModuleNameLength, 'a'), "a module name at the length limit was replaced");
++    require(name(std::string(MaxModuleNameLength + 1, 'a'), 1) == "libFuzz1.prx", "a module name over the length limit was kept");
++}
++
+ void everyExtendedConfigurationPassesConversionValidation() {
+     SilentProgress progress;
+     std::array<bool, 16> reached{};
+@@ -136,6 +173,8 @@ int main() {
+         legacySelectorsKeepTheirMeaning();
+         extendedSelectorsNeedTheirOptionWords();
+         fixedBasesAreValidAddresses();
++        recordsSplitAtTheirLengths();
++        moduleNamesStayInsideTheModuleDirectory();
+         everyExtendedConfigurationPassesConversionValidation();
+     } catch (const std::exception& error) {
+         std::cerr << error.what() << '\n';
+diff --git a/docs/dev/BUILD.md b/docs/dev/BUILD.md
+index d16048ab3b..1aa4ebfc0e 100644
+--- a/docs/dev/BUILD.md
++++ b/docs/dev/BUILD.md
+@@ -31,6 +31,14 @@ build-fuzz/tests/relinker_conversion_fuzzer build-fuzz/fuzz-corpus -fork=2 -max_
+ 
+ `relinker_fuzz_seeds.py` writes the executables built by the relinker's Python tests as seeds, one per target system; `--extended-options` adds one seed per target system and further option. With `BUILD_TESTING=ON`, CTest runs 20000 inputs from an empty corpus as `relinker_conversion_fuzzer`. Findings are written to the working directory as `crash-*`, `timeout-*` or `oom-*`; reproduce one with `build-fuzz/tests/relinker_conversion_fuzzer <file>`.
+ 
++`relinker_guest_module_fuzzer` runs the conversion with guest modules, as the web converter does when modules are supplied. Its input starts with the same selector and option bytes; the rest is a list of records, each a 4-byte little-endian length and that many bytes: the executable, then up to four pairs of a module file name and the module's bytes, read from `/input/sce_module`. A name that is empty, longer than 64 bytes, `.`, `..` or holds a byte outside `A-Z`, `a-z`, `0-9`, `.`, `_` and `-` is replaced with `libFuzz<index>.prx`. Guest modules require eager binding, so `--lazy-binding` is dropped. `python3 tools/relinker_fuzz_seeds.py <corpus> --guest-modules` writes its seeds: an executable that imports the provider of `test_guest_gnu_hash.py`, and the standalone fixture executable with each module the relinker's Python tests build without arguments; `--extended-options` adds the option seeds. CTest runs 20000 inputs from an empty corpus as `relinker_guest_module_fuzzer`.
++
++```sh
++cmake --build build-fuzz --target relinker_guest_module_fuzzer
++python3 tools/relinker_fuzz_seeds.py build-fuzz/guest-corpus --guest-modules --extended-options
++build-fuzz/tests/relinker_guest_module_fuzzer build-fuzz/guest-corpus -fork=2 -max_total_time=1200 -timeout=20
++```
++
+ `tools/relinker_seed_manifest.py <corpus>` describes each file of a flat fuzz corpus as one JSON object: its name, its size, the SHA-256 of its content and its first byte, which selects the target system.
+ 
+ ## Full build
+diff --git a/tools/relinker_fuzz_seeds.py b/tools/relinker_fuzz_seeds.py
+index 31da825a57..291adc2922 100644
+--- a/tools/relinker_fuzz_seeds.py
++++ b/tools/relinker_fuzz_seeds.py
+@@ -42,12 +42,52 @@ def images():
+                 yield f"{path.stem}-{name}", bytes(data)
+ 
+ 
++def module_image(value):
++    image = value[0] if isinstance(value, tuple) and value else value
++    return bytes(image) if isinstance(image, (bytes, bytearray)) and len(image) >= 64 else None
++
++
++def guest_modules():
++    sys.path.insert(0, str(TESTS))
++    try:
++        from guest_import_fixtures import executable
++        from test_guest_gnu_hash import module as provider
++        from test_guest_intel_trampolines import main_fixture
++    except Exception as error:
++        print(f"warning: no guest module seeds: the fixtures cannot be imported: {error}", file=sys.stderr)
++        return
++    image, names = provider()
++    yield "test_guest_gnu_hash-provider", bytes(executable("provider.prx", names[-1] + "#A#B")), [("provider.prx", bytes(image))]
++    standalone = bytes(main_fixture())
++    for path in sorted(TESTS.glob("test_*.py")):
++        try:
++            module = importlib.import_module(path.stem)
++        except Exception:
++            continue
++        function = getattr(module, "module", None)
++        if not callable(function) or not without_arguments(function):
++            continue
++        try:
++            image = module_image(function())
++        except Exception as error:
++            print(f"warning: no guest module seed from {path.stem}.module: {error}", file=sys.stderr)
++            continue
++        if image is not None:
++            yield f"{path.stem}-module", standalone, [(f"{path.stem}.prx", image)]
++
++
++def record(data):
++    return len(data).to_bytes(4, "little") + data
++
++
+ def main(argv=None):
+     parser = argparse.ArgumentParser(description="Write relinker test fixtures as relinker_conversion_fuzzer seeds")
+     parser.add_argument("output", type=Path)
+     parser.add_argument("--all-configurations", action="store_true", help="cover every distinct fuzzer selector configuration")
+     parser.add_argument("--extended-options", action="store_true",
+                         help="also write one seed per target and extended conversion option")
++    parser.add_argument("--guest-modules", action="store_true",
++                        help="write relinker_guest_module_fuzzer seeds: an executable and its guest modules")
+     arguments = parser.parse_args(argv)
+     selectors = SELECTORS
+     if arguments.all_configurations:
+@@ -68,6 +108,17 @@ def main(argv=None):
+     except OSError as error:
+         parser.error(str(error))
+     count = 0
++    if arguments.guest_modules:
++        try:
++            for name, executable, modules in guest_modules():
++                payload = record(executable) + b"".join(record(file.encode()) + record(image) for file, image in modules)
++                for suffix, prefix in prefixes:
++                    (arguments.output / f"{name}-{suffix}").write_bytes(prefix + payload)
++                    count += 1
++        except OSError as error:
++            parser.error(str(error))
++        print(f"{count} guest module seeds written to {arguments.output}")
++        return 0
+     try:
+         for name, data in images():
+             for suffix, prefix in prefixes:
+diff --git a/tools/tests/test_relinker_fuzz_configurations.py b/tools/tests/test_relinker_fuzz_configurations.py
+index 4f41f01627..24eaca4f74 100644
+--- a/tools/tests/test_relinker_fuzz_configurations.py
++++ b/tools/tests/test_relinker_fuzz_configurations.py
+@@ -69,6 +69,28 @@ class RelinkerFuzzConfigurationsTests(unittest.TestCase):
+                 self.assertEqual(legacy, {0, 1, 2, 4})
+                 self.assertEqual(extended, expected)
+ 
++    def test_guest_module_seeds_hold_an_executable_and_named_modules(self):
++        cases = list(relinker_fuzz_seeds.guest_modules())
++        self.assertIn("test_guest_gnu_hash-provider", [name for name, _, _ in cases])
++        with tempfile.TemporaryDirectory() as directory:
++            output = Path(directory) / "guest"
++            result = subprocess.run([sys.executable, str(Path(relinker_fuzz_seeds.__file__)), str(output), "--guest-modules"],
++                                    capture_output=True, text=True, timeout=20)
++            self.assertEqual(result.returncode, 0, result.stderr)
++            self.assertEqual(len(list(output.iterdir())), len(cases) * len(relinker_fuzz_seeds.SELECTORS))
++            for name, executable, modules in cases:
++                for selector in relinker_fuzz_seeds.SELECTORS:
++                    data = (output / f"{name}-{selector}").read_bytes()
++                    self.assertEqual(data[0], selector)
++                    records = []
++                    rest = data[1:]
++                    while rest:
++                        length = int.from_bytes(rest[:4], "little")
++                        records.append(rest[4:4 + length])
++                        rest = rest[4 + length:]
++                    self.assertEqual(records[0], executable)
++                    self.assertEqual(records[1:], [part for file, image in modules for part in (file.encode(), image)])
++
+     def test_all_configurations_reports_invalid_output_without_traceback(self):
+         with tempfile.TemporaryDirectory() as directory:
+             existing = Path(directory) / "existing.bin"
+-- 
+2.43.0
+

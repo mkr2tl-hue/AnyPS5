@@ -1,0 +1,431 @@
+From e32764d9ed6279808246e3aefdb72859351faa19 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 10:52:32 +0000
+Subject: [PATCH 1/2] test(relinker): fuzz the conversion options the command
+ line and web converter reach
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01K8jaqaV3jxmjnPFRfdH5uj
+---
+ core/relinker/CMakeLists.txt                  |   5 +
+ core/relinker/fuzz/ConversionFuzzer.cpp       |  17 +-
+ core/relinker/fuzz/FuzzOptions.hpp            |  87 +++++++++++
+ core/relinker/fuzz/tests/FuzzOptionsTests.cpp | 145 ++++++++++++++++++
+ docs/dev/BUILD.md                             |   6 +-
+ tools/relinker_fuzz_seeds.py                  |  14 +-
+ .../test_relinker_fuzz_configurations.py      |  29 ++++
+ 7 files changed, 286 insertions(+), 17 deletions(-)
+ create mode 100644 core/relinker/fuzz/FuzzOptions.hpp
+ create mode 100644 core/relinker/fuzz/tests/FuzzOptionsTests.cpp
+
+diff --git a/core/relinker/CMakeLists.txt b/core/relinker/CMakeLists.txt
+index c345423e63..96ca8c7e19 100644
+--- a/core/relinker/CMakeLists.txt
++++ b/core/relinker/CMakeLists.txt
+@@ -187,6 +187,11 @@ if(BUILD_TESTING)
+     add_test(NAME relinker_conversion COMMAND relinker_conversion_tests)
+     set_tests_properties(relinker_conversion PROPERTIES TIMEOUT 20)
+ 
++    add_test_executable(relinker_fuzz_options_tests ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/tests/FuzzOptionsTests.cpp)
++    target_link_libraries(relinker_fuzz_options_tests PRIVATE relinker_core)
++    add_test(NAME relinker_fuzz_options COMMAND relinker_fuzz_options_tests)
++    set_tests_properties(relinker_fuzz_options PROPERTIES TIMEOUT 120)
++
+     add_test_executable(native_path_tests
+         ${CMAKE_CURRENT_SOURCE_DIR}/io/tests/NativePathTests.cpp
+         ${CMAKE_CURRENT_SOURCE_DIR}/io/src/NativePath.cpp
+diff --git a/core/relinker/fuzz/ConversionFuzzer.cpp b/core/relinker/fuzz/ConversionFuzzer.cpp
+index 234d14857b..830b0b486a 100644
+--- a/core/relinker/fuzz/ConversionFuzzer.cpp
++++ b/core/relinker/fuzz/ConversionFuzzer.cpp
+@@ -1,3 +1,4 @@
++#include "FuzzOptions.hpp"
+ #include <relinker/pipeline/Conversion.hpp>
+ #include <io/NativePath.hpp>
+ #include <cstddef>
+@@ -16,24 +17,16 @@ public:
+ }
+ 
+ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
+-    if (size < 1) return 0;
+-    const std::uint8_t selector = data[0];
++    auto decoded = Relinker::Fuzz::DecodeFuzzInput({data, size});
++    if (!decoded) return 0;
+     Relinker::ConversionInput input;
+     input.InputPath = Io::NativePath("/input/eboot.bin");
+     input.OutputPath = Io::NativePath("/output/eboot");
+     input.ModuleRoot = "/input";
+-    input.Executable.assign(data + 1, data + size);
+-    Relinker::ConversionOptions options;
+-    switch (selector % 3) {
+-    case 0: options.Target = Relinker::TargetSystem::Linux; break;
+-    case 1: options.Target = Relinker::TargetSystem::Windows; break;
+-    default: options.Target = Relinker::TargetSystem::MacOs; break;
+-    }
+-    options.ToIntel = (selector & 0x04) != 0;
+-    options.UnusedFilterLevel = (selector >> 3) % 3;
++    input.Executable.assign(decoded->Executable.begin(), decoded->Executable.end());
+     SilentProgress progress;
+     try {
+-        Relinker::Conversion(progress).Convert(std::move(input), options);
++        Relinker::Conversion(progress).Convert(std::move(input), decoded->Options);
+     } catch (const std::exception&) {
+     }
+     return 0;
+diff --git a/core/relinker/fuzz/FuzzOptions.hpp b/core/relinker/fuzz/FuzzOptions.hpp
+new file mode 100644
+index 0000000000..8ed5338607
+--- /dev/null
++++ b/core/relinker/fuzz/FuzzOptions.hpp
+@@ -0,0 +1,87 @@
++#pragma once
++
++#include <relinker/pipeline/Conversion.hpp>
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++#include <span>
++
++namespace Relinker::Fuzz {
++
++enum ExtendedOption : std::uint16_t {
++    OptionRosetta = 1u << 0,
++    OptionAvx = 1u << 1,
++    OptionFrameRedZone = 1u << 2,
++    OptionLazyBinding = 1u << 3,
++    OptionSkipSyscallCheck = 1u << 4,
++    OptionTrapSdkSyscallStubs = 1u << 5,
++    OptionFunctionSymbolRoots = 1u << 6,
++    OptionOmitUnavailableDependencies = 1u << 7,
++    OptionWindowsGui = 1u << 8,
++    OptionTraceImports = 1u << 9,
++    OptionWindowsDiagnostics = 1u << 10,
++    OptionFixedBase = 1u << 11
++};
++
++inline constexpr unsigned FixedBaseShift = 12;
++inline constexpr std::uint64_t HighestFixedBase = 0x7fffffff0000;
++
++struct FuzzCase {
++    ConversionOptions Options;
++    std::span<const std::uint8_t> Executable;
++};
++
++[[nodiscard]] constexpr bool HasExtendedOptions(const std::uint8_t selector) {
++    return (selector >> 3) >= 3;
++}
++
++[[nodiscard]] constexpr std::uint64_t FixedBaseFor(const std::uint16_t options) {
++    const unsigned index = (options >> FixedBaseShift) & 0x0f;
++    return index == 0x0f ? HighestFixedBase : static_cast<std::uint64_t>(index + 2) << (16 + index);
++}
++
++[[nodiscard]] inline std::optional<FuzzCase> DecodeFuzzInput(const std::span<const std::uint8_t> data) {
++    if (data.empty()) return std::nullopt;
++    const std::uint8_t selector = data[0];
++    FuzzCase result;
++    auto& options = result.Options;
++    switch (selector % 3) {
++    case 0: options.Target = TargetSystem::Linux; break;
++    case 1: options.Target = TargetSystem::Windows; break;
++    default: options.Target = TargetSystem::MacOs; break;
++    }
++    options.ToIntel = (selector & 0x04) != 0;
++    options.UnusedFilterLevel = (selector >> 3) % 3;
++    if (!HasExtendedOptions(selector)) {
++        result.Executable = data.subspan(1);
++        return result;
++    }
++    if (data.size() < 3) return std::nullopt;
++    const auto extended = static_cast<std::uint16_t>(data[1] | (data[2] << 8));
++    result.Executable = data.subspan(3);
++    const bool onLinux = options.Target == TargetSystem::Linux;
++    const bool onWindows = options.Target == TargetSystem::Windows;
++    const bool onMacos = options.Target == TargetSystem::MacOs;
++    const auto has = [&](const ExtendedOption option) { return (extended & option) != 0; };
++    options.ToRosetta = has(OptionRosetta) && !onWindows;
++    options.ToAvx = has(OptionAvx) && onMacos;
++    if (options.ToRosetta || options.ToAvx) options.ToIntel = true;
++    options.FrameRedZone = has(OptionFrameRedZone) && onWindows;
++    options.LazyBinding = has(OptionLazyBinding);
++    options.SkipSyscallCheck = has(OptionSkipSyscallCheck);
++    options.TrapSdkSyscallStubs = has(OptionTrapSdkSyscallStubs) && !options.SkipSyscallCheck;
++    options.FunctionSymbolRoots = has(OptionFunctionSymbolRoots);
++    options.OmitUnavailableDependencies = has(OptionOmitUnavailableDependencies) && onLinux;
++    options.WindowsGui = has(OptionWindowsGui) && onWindows;
++    options.TraceImports = has(OptionTraceImports) && !options.LazyBinding;
++    options.WindowsDiagnostics = has(OptionWindowsDiagnostics) && onWindows;
++    if (has(OptionFixedBase)) {
++        const auto base = FixedBaseFor(extended);
++        if (onWindows) options.WindowsFixedBase = base;
++        else if (onMacos) options.MacosFixedBase = base;
++        else if (!options.LazyBinding) options.LinuxFixedBase = base;
++    }
++    return result;
++}
++
++}
+diff --git a/core/relinker/fuzz/tests/FuzzOptionsTests.cpp b/core/relinker/fuzz/tests/FuzzOptionsTests.cpp
+new file mode 100644
+index 0000000000..339562f576
+--- /dev/null
++++ b/core/relinker/fuzz/tests/FuzzOptionsTests.cpp
+@@ -0,0 +1,145 @@
++#include "../FuzzOptions.hpp"
++#include <relinker/pipeline/Conversion.hpp>
++#include <io/NativePath.hpp>
++#include <array>
++#include <cstdint>
++#include <exception>
++#include <functional>
++#include <sstream>
++#include <iostream>
++#include <stdexcept>
++#include <string>
++#include <string_view>
++#include <vector>
++
++namespace {
++
++using Relinker::ConversionOptions;
++using Relinker::TargetSystem;
++using namespace Relinker::Fuzz;
++
++class SilentProgress final : public Domain::IProgress {
++public:
++    void Report(const Domain::ProgressEvent&) override {}
++    void Message(std::string_view) override {}
++};
++
++std::string hex(const std::uint64_t value) {
++    std::ostringstream text;
++    text << "0x" << std::hex << value;
++    return text.str();
++}
++
++void require(const bool condition, const std::string& message) {
++    if (!condition) throw std::runtime_error(message);
++}
++
++bool sameExtendedFields(const ConversionOptions& left, const ConversionOptions& right) {
++    return left.ToRosetta == right.ToRosetta && left.ToAvx == right.ToAvx && left.FrameRedZone == right.FrameRedZone
++        && left.SkipSyscallCheck == right.SkipSyscallCheck && left.TrapSdkSyscallStubs == right.TrapSdkSyscallStubs
++        && left.FunctionSymbolRoots == right.FunctionSymbolRoots && left.LazyBinding == right.LazyBinding
++        && left.OmitUnavailableDependencies == right.OmitUnavailableDependencies && left.WindowsGui == right.WindowsGui
++        && left.TraceImports == right.TraceImports && left.WindowsFixedBase == right.WindowsFixedBase
++        && left.WindowsDiagnostics == right.WindowsDiagnostics && left.LinuxFixedBase == right.LinuxFixedBase
++        && left.MacosFixedBase == right.MacosFixedBase;
++}
++
++void legacySelectorsKeepTheirMeaning() {
++    const std::array<std::uint8_t, 4> executable{0x7f, 'E', 'L', 'F'};
++    unsigned legacy = 0;
++    for (unsigned selector = 0; selector < 256; ++selector) {
++        if (HasExtendedOptions(static_cast<std::uint8_t>(selector))) continue;
++        ++legacy;
++        std::vector<std::uint8_t> data{static_cast<std::uint8_t>(selector)};
++        data.insert(data.end(), executable.begin(), executable.end());
++        const auto decoded = DecodeFuzzInput(data);
++        require(decoded.has_value(), "a legacy selector was not decoded: " + std::to_string(selector));
++        const auto expectedTarget = selector % 3 == 0 ? TargetSystem::Linux : selector % 3 == 1 ? TargetSystem::Windows : TargetSystem::MacOs;
++        require(decoded->Options.Target == expectedTarget, "legacy target changed for selector " + std::to_string(selector));
++        require(decoded->Options.ToIntel == ((selector & 4) != 0), "legacy --to-intel changed for selector " + std::to_string(selector));
++        require(decoded->Options.UnusedFilterLevel == (selector >> 3) % 3, "legacy filter level changed for selector " + std::to_string(selector));
++        require(sameExtendedFields(decoded->Options, ConversionOptions{}), "a legacy selector enabled an extended option: " + std::to_string(selector));
++        require(decoded->Executable.size() == executable.size() && decoded->Executable.data() == data.data() + 1, "a legacy selector did not pass the remaining bytes through: " + std::to_string(selector));
++    }
++    require(legacy == 24, "expected 24 legacy selectors, found " + std::to_string(legacy));
++    require(!DecodeFuzzInput({}).has_value(), "an empty input was decoded");
++}
++
++void extendedSelectorsNeedTheirOptionWords() {
++    for (unsigned selector = 0; selector < 256; ++selector) {
++        if (!HasExtendedOptions(static_cast<std::uint8_t>(selector))) continue;
++        for (std::size_t size = 1; size < 3; ++size) {
++            const std::vector<std::uint8_t> data(size, static_cast<std::uint8_t>(selector));
++            require(!DecodeFuzzInput(data).has_value(), "an extended selector without its option word was decoded: " + std::to_string(selector));
++        }
++        const std::vector<std::uint8_t> data{static_cast<std::uint8_t>(selector), 0, 0, 0x7f};
++        const auto decoded = DecodeFuzzInput(data);
++        require(decoded.has_value() && decoded->Executable.size() == 1 && decoded->Executable.data() == data.data() + 3, "an extended selector did not skip its option word: " + std::to_string(selector));
++    }
++}
++
++void fixedBasesAreValidAddresses() {
++    for (unsigned index = 0; index < 16; ++index) {
++        const auto base = FixedBaseFor(static_cast<std::uint16_t>(index << FixedBaseShift));
++        require(base >= 0x20000 && base <= HighestFixedBase && base % 0x10000 == 0, "fixed base " + hex(base) + " is outside the addresses the command line accepts");
++    }
++}
++
++void everyExtendedConfigurationPassesConversionValidation() {
++    SilentProgress progress;
++    std::array<bool, 16> reached{};
++    std::array<std::function<bool(const ConversionOptions&)>, 12> fields{
++        [](const ConversionOptions& options) { return options.ToRosetta; },
++        [](const ConversionOptions& options) { return options.ToAvx; },
++        [](const ConversionOptions& options) { return options.FrameRedZone; },
++        [](const ConversionOptions& options) { return options.LazyBinding; },
++        [](const ConversionOptions& options) { return options.SkipSyscallCheck; },
++        [](const ConversionOptions& options) { return options.TrapSdkSyscallStubs; },
++        [](const ConversionOptions& options) { return options.FunctionSymbolRoots; },
++        [](const ConversionOptions& options) { return options.OmitUnavailableDependencies; },
++        [](const ConversionOptions& options) { return options.WindowsGui; },
++        [](const ConversionOptions& options) { return options.TraceImports; },
++        [](const ConversionOptions& options) { return options.WindowsDiagnostics; },
++        [](const ConversionOptions& options) { return options.WindowsFixedBase || options.LinuxFixedBase || options.MacosFixedBase; }};
++    unsigned checked = 0;
++    for (unsigned target = 0; target < 3; ++target) {
++        for (unsigned intel = 0; intel < 2; ++intel) {
++            const auto selector = static_cast<std::uint8_t>(target | (intel << 2) | (3u << 3));
++            for (unsigned extended = 0; extended < 0x10000; ++extended) {
++                const std::array<std::uint8_t, 3> data{selector, static_cast<std::uint8_t>(extended), static_cast<std::uint8_t>(extended >> 8)};
++                const auto decoded = DecodeFuzzInput(data);
++                require(decoded.has_value() && decoded->Executable.empty(), "an extended configuration was not decoded");
++                for (std::size_t field = 0; field < fields.size(); ++field) reached[field] = reached[field] || fields[field](decoded->Options);
++                Relinker::ConversionInput input;
++                input.InputPath = Io::NativePath("/input/eboot.bin");
++                input.OutputPath = Io::NativePath("/output/eboot");
++                input.ModuleRoot = "/input";
++                std::string failure = "conversion accepted an empty executable";
++                try {
++                    static_cast<void>(Relinker::Conversion(progress).Convert(std::move(input), decoded->Options));
++                } catch (const std::exception& error) {
++                    failure = error.what();
++                }
++                require(failure == "File too small for ELF header", "selector " + std::to_string(selector) + " with options " + hex(extended) + " was refused before the executable was read: " + failure);
++                ++checked;
++            }
++        }
++    }
++    for (std::size_t field = 0; field < fields.size(); ++field) require(reached[field], "extended option bit " + std::to_string(field) + " never reaches the conversion options");
++    std::cout << checked << " extended fuzzer configurations pass conversion option validation\n";
++}
++
++}
++
++int main() {
++    try {
++        legacySelectorsKeepTheirMeaning();
++        extendedSelectorsNeedTheirOptionWords();
++        fixedBasesAreValidAddresses();
++        everyExtendedConfigurationPassesConversionValidation();
++    } catch (const std::exception& error) {
++        std::cerr << error.what() << '\n';
++        return 1;
++    }
++    return 0;
++}
+diff --git a/docs/dev/BUILD.md b/docs/dev/BUILD.md
+index 534b501b25..d16048ab3b 100644
+--- a/docs/dev/BUILD.md
++++ b/docs/dev/BUILD.md
+@@ -20,16 +20,16 @@ Use a separate build directory for the full build.
+ 
+ ## Fuzzing
+ 
+-`ANYPS5_BUILD_FUZZERS` builds `relinker_conversion_fuzzer`, a libFuzzer target that runs the whole conversion on its input, as the web converter does. It requires `ANYPS5_RELINKER_ONLY`, Clang on Linux and the compiler-rt sanitizer runtimes (`libclang-rt-18-dev` on Ubuntu 24.04). Every target is built with AddressSanitizer and UndefinedBehaviorSanitizer, without `-fsanitize=function`: that check reads a signature before the target of every indirect call and faults on the generated code the codegen tests call. The first input byte selects the target system (modulo 3: Linux, Windows, macOS), bit 2 `--to-intel` and the byte shifted right by 3, modulo 3, the `unused-filter` level; the remaining bytes are the executable. A conversion that throws a `std::exception` is a rejected input; a sanitizer report, an abort or a timeout is a finding.
++`ANYPS5_BUILD_FUZZERS` builds `relinker_conversion_fuzzer`, a libFuzzer target that runs the whole conversion on its input, as the web converter does. It requires `ANYPS5_RELINKER_ONLY`, Clang on Linux and the compiler-rt sanitizer runtimes (`libclang-rt-18-dev` on Ubuntu 24.04). Every target is built with AddressSanitizer and UndefinedBehaviorSanitizer, without `-fsanitize=function`: that check reads a signature before the target of every indirect call and faults on the generated code the codegen tests call. The first input byte selects the target system (modulo 3: Linux, Windows, macOS), bit 2 `--to-intel` and the byte shifted right by 3, modulo 3, the `unused-filter` level. When the byte shifted right by 3 is less than 3, the remaining bytes are the executable. Otherwise the next two bytes, little-endian, select further options and the executable follows them: bit 0 `--to-rosetta`, 1 `--to-avx`, 2 `--frame-red-zone`, 3 `--lazy-binding`, 4 `--skip-syscall-check`, 5 `--trap-sdk-syscall-stubs`, 6 `--function-symbol-roots`, 7 `--omit-unavailable-dependencies`, 8 `--windows-gui`, 9 `--trace-imports`, 10 `--windows-diagnostics` and 11 the target system's fixed base, whose address bits 12 to 15 select. An option the command line refuses with the selected target or with another selected option is dropped, as `core/relinker/fuzz/FuzzOptions.hpp` decodes it; `--to-rosetta` and `--to-avx` turn on `--to-intel`, and the web converter's Windows conversions are the Windows target with bit 10. `relinker_fuzz_options` checks that every decoded configuration passes the conversion's option checks. A conversion that throws a `std::exception` is a rejected input; a sanitizer report, an abort or a timeout is a finding.
+ 
+ ```sh
+ cmake -S . -B build-fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DANYPS5_RELINKER_ONLY=ON -DANYPS5_BUILD_FUZZERS=ON -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+ cmake --build build-fuzz --target relinker_conversion_fuzzer
+-python3 tools/relinker_fuzz_seeds.py build-fuzz/fuzz-corpus
++python3 tools/relinker_fuzz_seeds.py build-fuzz/fuzz-corpus --extended-options
+ build-fuzz/tests/relinker_conversion_fuzzer build-fuzz/fuzz-corpus -fork=2 -max_total_time=1200 -timeout=20
+ ```
+ 
+-`relinker_fuzz_seeds.py` writes the executables built by the relinker's Python tests as seeds, one per target system. With `BUILD_TESTING=ON`, CTest runs 20000 inputs from an empty corpus as `relinker_conversion_fuzzer`. Findings are written to the working directory as `crash-*`, `timeout-*` or `oom-*`; reproduce one with `build-fuzz/tests/relinker_conversion_fuzzer <file>`.
++`relinker_fuzz_seeds.py` writes the executables built by the relinker's Python tests as seeds, one per target system; `--extended-options` adds one seed per target system and further option. With `BUILD_TESTING=ON`, CTest runs 20000 inputs from an empty corpus as `relinker_conversion_fuzzer`. Findings are written to the working directory as `crash-*`, `timeout-*` or `oom-*`; reproduce one with `build-fuzz/tests/relinker_conversion_fuzzer <file>`.
+ 
+ `tools/relinker_seed_manifest.py <corpus>` describes each file of a flat fuzz corpus as one JSON object: its name, its size, the SHA-256 of its content and its first byte, which selects the target system.
+ 
+diff --git a/tools/relinker_fuzz_seeds.py b/tools/relinker_fuzz_seeds.py
+index 2e268effd9..31da825a57 100644
+--- a/tools/relinker_fuzz_seeds.py
++++ b/tools/relinker_fuzz_seeds.py
+@@ -9,6 +9,8 @@ TESTS = ROOT / "core" / "relinker" / "relinker" / "tests"
+ BUILDERS = ("fixture", "image", "make_image", "tls_image", "padded_image", "executable_image",
+             "empty_tls_image", "make_eof_segment_prefix_image")
+ SELECTORS = (0, 1, 2, 4)
++EXTENDED_SELECTOR = 3 << 3
++EXTENDED_OPTION_BITS = 12
+ 
+ 
+ def without_arguments(function):
+@@ -44,6 +46,8 @@ def main(argv=None):
+     parser = argparse.ArgumentParser(description="Write relinker test fixtures as relinker_conversion_fuzzer seeds")
+     parser.add_argument("output", type=Path)
+     parser.add_argument("--all-configurations", action="store_true", help="cover every distinct fuzzer selector configuration")
++    parser.add_argument("--extended-options", action="store_true",
++                        help="also write one seed per target and extended conversion option")
+     arguments = parser.parse_args(argv)
+     selectors = SELECTORS
+     if arguments.all_configurations:
+@@ -51,6 +55,12 @@ def main(argv=None):
+         for selector in range(256):
+             configurations.setdefault((selector % 3, bool(selector & 4), (selector >> 3) % 3), selector)
+         selectors = tuple(configurations.values())
++    prefixes = [(str(selector), bytes([selector])) for selector in selectors]
++    if arguments.extended_options:
++        for target in range(3):
++            for bit in range(EXTENDED_OPTION_BITS):
++                options = 1 << bit
++                prefixes.append((f"x{target}-{options:04x}", bytes([EXTENDED_SELECTOR | target]) + options.to_bytes(2, "little")))
+     if arguments.output.is_file():
+         parser.error(f"{arguments.output} is an existing file, not a directory")
+     try:
+@@ -60,8 +70,8 @@ def main(argv=None):
+     count = 0
+     try:
+         for name, data in images():
+-            for selector in selectors:
+-                (arguments.output / f"{name}-{selector}").write_bytes(bytes([selector]) + data)
++            for suffix, prefix in prefixes:
++                (arguments.output / f"{name}-{suffix}").write_bytes(prefix + data)
+                 count += 1
+     except OSError as error:
+         parser.error(str(error))
+diff --git a/tools/tests/test_relinker_fuzz_configurations.py b/tools/tests/test_relinker_fuzz_configurations.py
+index 66fb2a5b84..4f41f01627 100644
+--- a/tools/tests/test_relinker_fuzz_configurations.py
++++ b/tools/tests/test_relinker_fuzz_configurations.py
+@@ -40,6 +40,35 @@ class RelinkerFuzzConfigurationsTests(unittest.TestCase):
+                         self.assertEqual(selectors, {0, 1, 2, 4})
+ 
+ 
++    def test_extended_options_add_one_seed_per_target_and_option_after_the_default_seeds(self):
++        images = dict(relinker_fuzz_seeds.images())
++        self.assertTrue(images)
++        expected = {(target, 1 << bit) for target in range(3) for bit in range(relinker_fuzz_seeds.EXTENDED_OPTION_BITS)}
++        with tempfile.TemporaryDirectory() as directory:
++            output = Path(directory) / "extended"
++            result = subprocess.run([sys.executable, str(Path(relinker_fuzz_seeds.__file__)), str(output), "--extended-options"],
++                                    capture_output=True, text=True, timeout=20)
++            self.assertEqual(result.returncode, 0, result.stderr)
++            self.assertEqual(len(list(output.iterdir())), len(images) * (4 + len(expected)))
++            for name, image in images.items():
++                legacy = set()
++                extended = set()
++                for seed in output.glob(name + "-*"):
++                    data = seed.read_bytes()
++                    selector = data[0]
++                    if (selector >> 3) < 3:
++                        self.assertEqual(seed.name, name + "-" + str(selector))
++                        self.assertEqual(data[1:], image)
++                        legacy.add(selector)
++                        continue
++                    self.assertEqual(selector, relinker_fuzz_seeds.EXTENDED_SELECTOR | selector % 3)
++                    options = int.from_bytes(data[1:3], "little")
++                    self.assertEqual(seed.name, f"{name}-x{selector % 3}-{options:04x}")
++                    self.assertEqual(data[3:], image)
++                    extended.add((selector % 3, options))
++                self.assertEqual(legacy, {0, 1, 2, 4})
++                self.assertEqual(extended, expected)
++
+     def test_all_configurations_reports_invalid_output_without_traceback(self):
+         with tempfile.TemporaryDirectory() as directory:
+             existing = Path(directory) / "existing.bin"
+-- 
+2.43.0
+
