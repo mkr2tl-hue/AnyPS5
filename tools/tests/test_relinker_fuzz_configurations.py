@@ -69,6 +69,28 @@ class RelinkerFuzzConfigurationsTests(unittest.TestCase):
                 self.assertEqual(legacy, {0, 1, 2, 4})
                 self.assertEqual(extended, expected)
 
+    def test_guest_module_seeds_hold_an_executable_and_named_modules(self):
+        cases = list(relinker_fuzz_seeds.guest_modules())
+        self.assertIn("test_guest_gnu_hash-provider", [name for name, _, _ in cases])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "guest"
+            result = subprocess.run([sys.executable, str(Path(relinker_fuzz_seeds.__file__)), str(output), "--guest-modules"],
+                                    capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(list(output.iterdir())), len(cases) * len(relinker_fuzz_seeds.SELECTORS))
+            for name, executable, modules in cases:
+                for selector in relinker_fuzz_seeds.SELECTORS:
+                    data = (output / f"{name}-{selector}").read_bytes()
+                    self.assertEqual(data[0], selector)
+                    records = []
+                    rest = data[1:]
+                    while rest:
+                        length = int.from_bytes(rest[:4], "little")
+                        records.append(rest[4:4 + length])
+                        rest = rest[4 + length:]
+                    self.assertEqual(records[0], executable)
+                    self.assertEqual(records[1:], [part for file, image in modules for part in (file.encode(), image)])
+
     def test_all_configurations_reports_invalid_output_without_traceback(self):
         with tempfile.TemporaryDirectory() as directory:
             existing = Path(directory) / "existing.bin"

@@ -1,10 +1,13 @@
 #pragma once
 
 #include <relinker/pipeline/Conversion.hpp>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <span>
+#include <vector>
 
 namespace Relinker::Fuzz {
 
@@ -82,6 +85,32 @@ struct FuzzCase {
         else if (!options.LazyBinding) options.LinuxFixedBase = base;
     }
     return result;
+}
+
+inline constexpr std::size_t MaxGuestModules = 4;
+inline constexpr std::size_t MaxModuleNameLength = 64;
+
+[[nodiscard]] inline std::string ModuleFileName(const std::span<const std::uint8_t> name, const std::size_t index) {
+    const auto allowed = [](const std::uint8_t character) {
+        return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '.' || character == '_' || character == '-';
+    };
+    std::string text(name.begin(), name.end());
+    if (text.empty() || text.size() > MaxModuleNameLength || text == "." || text == ".." || !std::all_of(name.begin(), name.end(), allowed))
+        return "libFuzz" + std::to_string(index) + ".prx";
+    return text;
+}
+
+[[nodiscard]] inline std::vector<std::span<const std::uint8_t>> SplitRecords(std::span<const std::uint8_t> data, const std::size_t maxRecords) {
+    std::vector<std::span<const std::uint8_t>> records;
+    while (records.size() < maxRecords && data.size() >= 4) {
+        const std::size_t length = static_cast<std::size_t>(data[0]) | static_cast<std::size_t>(data[1]) << 8
+            | static_cast<std::size_t>(data[2]) << 16 | static_cast<std::size_t>(data[3]) << 24;
+        data = data.subspan(4);
+        if (length > data.size()) break;
+        records.push_back(data.first(length));
+        data = data.subspan(length);
+    }
+    return records;
 }
 
 }

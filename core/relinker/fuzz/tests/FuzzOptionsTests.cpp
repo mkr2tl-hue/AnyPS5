@@ -85,6 +85,43 @@ void fixedBasesAreValidAddresses() {
     }
 }
 
+std::vector<std::uint8_t> record(const std::vector<std::uint8_t>& bytes) {
+    const auto length = static_cast<std::uint32_t>(bytes.size());
+    std::vector<std::uint8_t> result{static_cast<std::uint8_t>(length), static_cast<std::uint8_t>(length >> 8), static_cast<std::uint8_t>(length >> 16), static_cast<std::uint8_t>(length >> 24)};
+    result.insert(result.end(), bytes.begin(), bytes.end());
+    return result;
+}
+
+void recordsSplitAtTheirLengths() {
+    std::vector<std::uint8_t> data;
+    for (const auto& bytes : {std::vector<std::uint8_t>{1, 2, 3}, std::vector<std::uint8_t>{}, std::vector<std::uint8_t>{4}}) {
+        const auto encoded = record(bytes);
+        data.insert(data.end(), encoded.begin(), encoded.end());
+    }
+    const auto records = SplitRecords(data, 8);
+    require(records.size() == 3 && records[0].size() == 3 && records[0][2] == 3 && records[1].empty() && records[2].size() == 1 && records[2][0] == 4, "records were not split at their lengths");
+    require(SplitRecords(data, 2).size() == 2, "the record limit was not applied");
+    auto truncated = data;
+    truncated.pop_back();
+    require(SplitRecords(truncated, 8).size() == 2, "a record longer than the remaining input was kept");
+    const std::vector<std::uint8_t> huge{0xff, 0xff, 0xff, 0xff, 0};
+    require(SplitRecords(huge, 8).empty(), "a length past the input end produced a record");
+    require(SplitRecords(std::vector<std::uint8_t>{1, 0, 0}, 8).empty(), "a partial length produced a record");
+}
+
+void moduleNamesStayInsideTheModuleDirectory() {
+    const auto name = [](const std::string_view text, const std::size_t index) {
+        return ModuleFileName(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()), index);
+    };
+    require(name("provider.prx", 0) == "provider.prx", "a valid module name was replaced");
+    require(name("libSce-Fuzz_2.sprx", 0) == "libSce-Fuzz_2.sprx", "a module name with dashes and underscores was replaced");
+    const std::array<std::string_view, 9> invalidNames{"", ".", "..", "../eboot.bin", "dir/lib.prx", "dir\\lib.prx", std::string_view("lib\0.prx", 8), "C:lib.prx", "lib .prx"};
+    for (const auto invalid : invalidNames)
+        require(name(invalid, 3) == "libFuzz3.prx", "an invalid module name was kept: " + std::string(invalid.begin(), invalid.end()));
+    require(name(std::string(MaxModuleNameLength, 'a'), 0) == std::string(MaxModuleNameLength, 'a'), "a module name at the length limit was replaced");
+    require(name(std::string(MaxModuleNameLength + 1, 'a'), 1) == "libFuzz1.prx", "a module name over the length limit was kept");
+}
+
 void everyExtendedConfigurationPassesConversionValidation() {
     SilentProgress progress;
     std::array<bool, 16> reached{};
@@ -136,6 +173,8 @@ int main() {
         legacySelectorsKeepTheirMeaning();
         extendedSelectorsNeedTheirOptionWords();
         fixedBasesAreValidAddresses();
+        recordsSplitAtTheirLengths();
+        moduleNamesStayInsideTheModuleDirectory();
         everyExtendedConfigurationPassesConversionValidation();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

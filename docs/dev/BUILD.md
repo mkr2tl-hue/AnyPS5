@@ -31,6 +31,14 @@ build-fuzz/tests/relinker_conversion_fuzzer build-fuzz/fuzz-corpus -fork=2 -max_
 
 `relinker_fuzz_seeds.py` writes the executables built by the relinker's Python tests as seeds, one per target system; `--extended-options` adds one seed per target system and further option. With `BUILD_TESTING=ON`, CTest runs 20000 inputs from an empty corpus as `relinker_conversion_fuzzer`. Findings are written to the working directory as `crash-*`, `timeout-*` or `oom-*`; reproduce one with `build-fuzz/tests/relinker_conversion_fuzzer <file>`.
 
+`relinker_guest_module_fuzzer` runs the conversion with guest modules, as the web converter does when modules are supplied. Its input starts with the same selector and option bytes; the rest is a list of records, each a 4-byte little-endian length and that many bytes: the executable, then up to four pairs of a module file name and the module's bytes, read from `/input/sce_module`. A name that is empty, longer than 64 bytes, `.`, `..` or holds a byte outside `A-Z`, `a-z`, `0-9`, `.`, `_` and `-` is replaced with `libFuzz<index>.prx`. Guest modules require eager binding, so `--lazy-binding` is dropped. `python3 tools/relinker_fuzz_seeds.py <corpus> --guest-modules` writes its seeds: an executable that imports the provider of `test_guest_gnu_hash.py`, and the standalone fixture executable with each module the relinker's Python tests build without arguments; `--extended-options` adds the option seeds. CTest runs 20000 inputs from an empty corpus as `relinker_guest_module_fuzzer`.
+
+```sh
+cmake --build build-fuzz --target relinker_guest_module_fuzzer
+python3 tools/relinker_fuzz_seeds.py build-fuzz/guest-corpus --guest-modules --extended-options
+build-fuzz/tests/relinker_guest_module_fuzzer build-fuzz/guest-corpus -fork=2 -max_total_time=1200 -timeout=20
+```
+
 `tools/relinker_seed_manifest.py <corpus>` describes each file of a flat fuzz corpus as one JSON object: its name, its size, the SHA-256 of its content and its first byte, which selects the target system.
 
 ## Full build

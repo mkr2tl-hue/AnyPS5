@@ -42,12 +42,52 @@ def images():
                 yield f"{path.stem}-{name}", bytes(data)
 
 
+def module_image(value):
+    image = value[0] if isinstance(value, tuple) and value else value
+    return bytes(image) if isinstance(image, (bytes, bytearray)) and len(image) >= 64 else None
+
+
+def guest_modules():
+    sys.path.insert(0, str(TESTS))
+    try:
+        from guest_import_fixtures import executable
+        from test_guest_gnu_hash import module as provider
+        from test_guest_intel_trampolines import main_fixture
+    except Exception as error:
+        print(f"warning: no guest module seeds: the fixtures cannot be imported: {error}", file=sys.stderr)
+        return
+    image, names = provider()
+    yield "test_guest_gnu_hash-provider", bytes(executable("provider.prx", names[-1] + "#A#B")), [("provider.prx", bytes(image))]
+    standalone = bytes(main_fixture())
+    for path in sorted(TESTS.glob("test_*.py")):
+        try:
+            module = importlib.import_module(path.stem)
+        except Exception:
+            continue
+        function = getattr(module, "module", None)
+        if not callable(function) or not without_arguments(function):
+            continue
+        try:
+            image = module_image(function())
+        except Exception as error:
+            print(f"warning: no guest module seed from {path.stem}.module: {error}", file=sys.stderr)
+            continue
+        if image is not None:
+            yield f"{path.stem}-module", standalone, [(f"{path.stem}.prx", image)]
+
+
+def record(data):
+    return len(data).to_bytes(4, "little") + data
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Write relinker test fixtures as relinker_conversion_fuzzer seeds")
     parser.add_argument("output", type=Path)
     parser.add_argument("--all-configurations", action="store_true", help="cover every distinct fuzzer selector configuration")
     parser.add_argument("--extended-options", action="store_true",
                         help="also write one seed per target and extended conversion option")
+    parser.add_argument("--guest-modules", action="store_true",
+                        help="write relinker_guest_module_fuzzer seeds: an executable and its guest modules")
     arguments = parser.parse_args(argv)
     selectors = SELECTORS
     if arguments.all_configurations:
@@ -68,6 +108,17 @@ def main(argv=None):
     except OSError as error:
         parser.error(str(error))
     count = 0
+    if arguments.guest_modules:
+        try:
+            for name, executable, modules in guest_modules():
+                payload = record(executable) + b"".join(record(file.encode()) + record(image) for file, image in modules)
+                for suffix, prefix in prefixes:
+                    (arguments.output / f"{name}-{suffix}").write_bytes(prefix + payload)
+                    count += 1
+        except OSError as error:
+            parser.error(str(error))
+        print(f"{count} guest module seeds written to {arguments.output}")
+        return 0
     try:
         for name, data in images():
             for suffix, prefix in prefixes:
