@@ -187,6 +187,11 @@ if(BUILD_TESTING)
     add_test(NAME relinker_conversion COMMAND relinker_conversion_tests)
     set_tests_properties(relinker_conversion PROPERTIES TIMEOUT 20)
 
+    add_test_executable(relinker_fuzz_options_tests ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/tests/FuzzOptionsTests.cpp)
+    target_link_libraries(relinker_fuzz_options_tests PRIVATE relinker_core)
+    add_test(NAME relinker_fuzz_options COMMAND relinker_fuzz_options_tests)
+    set_tests_properties(relinker_fuzz_options PROPERTIES TIMEOUT 120)
+
     add_test_executable(native_path_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/io/tests/NativePathTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/io/src/NativePath.cpp

@@ -9,6 +9,8 @@ TESTS = ROOT / "core" / "relinker" / "relinker" / "tests"
 BUILDERS = ("fixture", "image", "make_image", "tls_image", "padded_image", "executable_image",
             "empty_tls_image", "make_eof_segment_prefix_image")
 SELECTORS = (0, 1, 2, 4)
+EXTENDED_SELECTOR = 3 << 3
+EXTENDED_OPTION_BITS = 12
 
 
 def without_arguments(function):
@@ -44,6 +46,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Write relinker test fixtures as relinker_conversion_fuzzer seeds")
     parser.add_argument("output", type=Path)
     parser.add_argument("--all-configurations", action="store_true", help="cover every distinct fuzzer selector configuration")
+    parser.add_argument("--extended-options", action="store_true",
+                        help="also write one seed per target and extended conversion option")
     arguments = parser.parse_args(argv)
     selectors = SELECTORS
     if arguments.all_configurations:
@@ -51,6 +55,12 @@ def main(argv=None):
         for selector in range(256):
             configurations.setdefault((selector % 3, bool(selector & 4), (selector >> 3) % 3), selector)
         selectors = tuple(configurations.values())
+    prefixes = [(str(selector), bytes([selector])) for selector in selectors]
+    if arguments.extended_options:
+        for target in range(3):
+            for bit in range(EXTENDED_OPTION_BITS):
+                options = 1 << bit
+                prefixes.append((f"x{target}-{options:04x}", bytes([EXTENDED_SELECTOR | target]) + options.to_bytes(2, "little")))
     if arguments.output.is_file():
         parser.error(f"{arguments.output} is an existing file, not a directory")
     try:
@@ -60,8 +70,8 @@ def main(argv=None):
     count = 0
     try:
         for name, data in images():
-            for selector in selectors:
-                (arguments.output / f"{name}-{selector}").write_bytes(bytes([selector]) + data)
+            for suffix, prefix in prefixes:
+                (arguments.output / f"{name}-{suffix}").write_bytes(prefix + data)
                 count += 1
     except OSError as error:
         parser.error(str(error))

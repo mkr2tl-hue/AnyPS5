@@ -40,6 +40,35 @@ class RelinkerFuzzConfigurationsTests(unittest.TestCase):
                         self.assertEqual(selectors, {0, 1, 2, 4})
 
 
+    def test_extended_options_add_one_seed_per_target_and_option_after_the_default_seeds(self):
+        images = dict(relinker_fuzz_seeds.images())
+        self.assertTrue(images)
+        expected = {(target, 1 << bit) for target in range(3) for bit in range(relinker_fuzz_seeds.EXTENDED_OPTION_BITS)}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "extended"
+            result = subprocess.run([sys.executable, str(Path(relinker_fuzz_seeds.__file__)), str(output), "--extended-options"],
+                                    capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(list(output.iterdir())), len(images) * (4 + len(expected)))
+            for name, image in images.items():
+                legacy = set()
+                extended = set()
+                for seed in output.glob(name + "-*"):
+                    data = seed.read_bytes()
+                    selector = data[0]
+                    if (selector >> 3) < 3:
+                        self.assertEqual(seed.name, name + "-" + str(selector))
+                        self.assertEqual(data[1:], image)
+                        legacy.add(selector)
+                        continue
+                    self.assertEqual(selector, relinker_fuzz_seeds.EXTENDED_SELECTOR | selector % 3)
+                    options = int.from_bytes(data[1:3], "little")
+                    self.assertEqual(seed.name, f"{name}-x{selector % 3}-{options:04x}")
+                    self.assertEqual(data[3:], image)
+                    extended.add((selector % 3, options))
+                self.assertEqual(legacy, {0, 1, 2, 4})
+                self.assertEqual(extended, expected)
+
     def test_all_configurations_reports_invalid_output_without_traceback(self):
         with tempfile.TemporaryDirectory() as directory:
             existing = Path(directory) / "existing.bin"
